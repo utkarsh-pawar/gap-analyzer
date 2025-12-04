@@ -4,9 +4,34 @@ const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const sqlite3 = require('sqlite3').verbose();
+const { open } = require('sqlite');
 
 const app = express();
 const port = 3000;
+let db;
+
+// --- Database Initialization ---
+(async () => {
+    try {
+        db = await open({
+            filename: './database.db',
+            driver: sqlite3.Database
+        });
+        await db.exec(`
+            CREATE TABLE IF NOT EXISTS results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subreddit TEXT NOT NULL,
+                idea TEXT NOT NULL,
+                probability INTEGER NOT NULL,
+                createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        console.log('Database connected and table created.');
+    } catch (err) {
+        console.error('Error connecting to database:', err);
+    }
+})();
 
 app.use(express.static('public')); // Serve static files
 
@@ -76,6 +101,15 @@ app.get('/search', async (req, res) => {
             const cleanedJsonText = analysisResultText.replace(/```json/g, '').replace(/```/g, '').trim();
             const analysisResultJson = JSON.parse(cleanedJsonText);
 
+            // --- Save valid result to database ---
+            if (analysisResultJson.businessIdea && analysisResultJson.gapProbability) {
+              await db.run(
+                'INSERT INTO results (subreddit, idea, probability) VALUES (?, ?, ?)',
+                [redditUrl, analysisResultJson.businessIdea, analysisResultJson.gapProbability]
+              );
+              console.log(`Saved result for ${sanitizedTopic} to the database.`);
+            }
+
             results.push({ 
               link: redditUrl, 
               idea: analysisResultJson.businessIdea,
@@ -117,6 +151,17 @@ app.get('/search', async (req, res) => {
     console.error("Error during search:", error);
     res.status(500).json({ error: "An error occurred during the search." });
   }
+});
+
+// --- New /history endpoint ---
+app.get('/history', async (req, res) => {
+    try {
+        const history = await db.all('SELECT subreddit, idea, probability, createdAt FROM results ORDER BY createdAt DESC');
+        res.json(history);
+    } catch (err) {
+        console.error('Error fetching history:', err);
+        res.status(500).json({ error: 'Failed to retrieve search history.' });
+    }
 });
 
 app.listen(port, () => {

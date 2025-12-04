@@ -23,7 +23,11 @@ let db;
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 subreddit TEXT NOT NULL,
                 idea TEXT NOT NULL,
-                probability INTEGER NOT NULL,
+                pain_point INTEGER NOT NULL,
+                audience_scale INTEGER NOT NULL,
+                monetization_potential INTEGER NOT NULL,
+                feasibility INTEGER NOT NULL,
+                overall_score REAL NOT NULL,
                 createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         `);
@@ -77,16 +81,19 @@ app.get('/search', async (req, res) => {
           const threadContent = $('body').text(); // Extract all text
           console.log(`Extracted thread content from ${redditUrl}`);
 
-          // 3. Analyze thread content with Gemini - NEW "Venture Capitalist" PROMPT
+          // 3. Analyze thread content with NEW "Practical Analyst" PROMPT
           const analysisPrompt = `
             Analyze the following content from the subreddit '${sanitizedTopic}'. 
-            Act as a Venture Capitalist identifying market gaps. 
-            Based on the problems, frustrations, and unmet needs discussed, provide:
-            1. A single, concrete business idea that could solve a key problem.
-            2. A "Gap Probability" score from 0 to 100, representing your confidence that there is a significant, underserved need for this business idea.
+            Act as a practical business analyst. Based on the content, provide:
+            1. A single, concrete business idea.
+            2. A score from 0-100 for "Pain Point Severity".
+            3. A score from 0-100 for "Audience Scale".
+            4. A score from 0-100 for "Monetization Potential".
+            5. A score from 0-100 for "Execution Feasibility" (where 100 is very feasible).
             
-            Return ONLY a single, raw JSON object in the format: {"businessIdea": "Your idea here", "gapProbability": percentage}.
-            Do not include any other text, formatting, or explanations.
+            Return ONLY a single, raw JSON object in the format: 
+            {"businessIdea": "Your idea here", "painPoint": score, "audienceScale": score, "monetizationPotential": score, "feasibility": score}.
+            Do not include any other text or formatting.
             
             Content:
             ${threadContent}
@@ -97,23 +104,29 @@ app.get('/search', async (req, res) => {
             analysisResponse = await model.generateContent(analysisPrompt);
             const analysisResultText = analysisResponse.response.text();
             
-            // Clean the text to ensure it's a valid JSON string
             const cleanedJsonText = analysisResultText.replace(/```json/g, '').replace(/```/g, '').trim();
             const analysisResultJson = JSON.parse(cleanedJsonText);
 
+            const { businessIdea, painPoint, audienceScale, monetizationPotential, feasibility } = analysisResultJson;
+            const overallScore = ((painPoint + audienceScale + monetizationPotential + feasibility) / 4).toFixed(1);
+
             // --- Save valid result to database ---
-            if (analysisResultJson.businessIdea && analysisResultJson.gapProbability) {
+            if (businessIdea) {
               await db.run(
-                'INSERT INTO results (subreddit, idea, probability) VALUES (?, ?, ?)',
-                [redditUrl, analysisResultJson.businessIdea, analysisResultJson.gapProbability]
+                'INSERT INTO results (subreddit, idea, pain_point, audience_scale, monetization_potential, feasibility, overall_score) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                [redditUrl, businessIdea, painPoint, audienceScale, monetizationPotential, feasibility, overallScore]
               );
               console.log(`Saved result for ${sanitizedTopic} to the database.`);
             }
 
             results.push({ 
               link: redditUrl, 
-              idea: analysisResultJson.businessIdea,
-              probability: analysisResultJson.gapProbability 
+              idea: businessIdea,
+              pain: painPoint,
+              audience: audienceScale,
+              monetization: monetizationPotential,
+              feasibility: feasibility,
+              overall: overallScore
             });
 
           } catch (analysisError) {
@@ -121,7 +134,7 @@ app.get('/search', async (req, res) => {
             results.push({
               link: redditUrl, 
               idea: 'Could not generate or parse analysis.',
-              probability: 0
+              overall: 0
             });
             continue;
           }
@@ -131,7 +144,7 @@ app.get('/search', async (req, res) => {
           results.push({
             link: redditUrl, 
             idea: 'Error parsing the subreddit page.',
-            probability: 0
+            overall: 0
           });
         }
 
@@ -140,7 +153,7 @@ app.get('/search', async (req, res) => {
         results.push({ 
           link: redditUrl, 
           idea: `Error fetching the subreddit page: ${error.message}`,
-          probability: 0 
+          overall: 0
         });
       }
     }
@@ -156,7 +169,7 @@ app.get('/search', async (req, res) => {
 // --- New /history endpoint ---
 app.get('/history', async (req, res) => {
     try {
-        const history = await db.all('SELECT subreddit, idea, probability, createdAt FROM results ORDER BY createdAt DESC');
+        const history = await db.all('SELECT * FROM results ORDER BY createdAt DESC');
         res.json(history);
     } catch (err) {
         console.error('Error fetching history:', err);
